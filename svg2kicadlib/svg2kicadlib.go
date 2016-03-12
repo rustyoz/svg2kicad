@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	mt "github.com/rustyoz/Mtransform"
 	"github.com/rustyoz/gokicadlib"
 )
 
@@ -21,7 +22,8 @@ type Group struct {
 	Fill        string
 	FillRule    string
 	Elements    []interface{}
-	transform   Transform // row, column
+	Transform   string
+	transform   *mt.Transform // row, column
 	group       *Group
 	svg         *Svg
 }
@@ -32,6 +34,7 @@ type Svg struct {
 	ses         []gokicadlib.SExpression
 	KicadOutput string
 	Name        string
+	transform   *mt.Transform
 }
 
 // Implements encoding.xml.Unmarshaler interface
@@ -52,6 +55,13 @@ func (g *Group) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error
 			g.Fill = attr.Value
 		case "fill-rule":
 			g.FillRule = attr.Value
+		case "transform":
+			g.Transform = attr.Value
+			t, err := parseTransform(g.Transform)
+			if err != nil {
+				fmt.Println(err)
+			}
+			g.transform = &t
 		}
 	}
 
@@ -67,11 +77,12 @@ func (g *Group) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error
 
 			switch tok.Name.Local {
 			case "g":
-				elementStruct = &Group{group: g, svg: g.svg}
+				elementStruct = &Group{group: g, svg: g.svg, transform: mt.NewTransform()}
 			case "rect":
 				elementStruct = &Rect{group: g}
 			case "path":
-				elementStruct = &Path{group: g}
+				elementStruct = &Path{group: g, strokeWidth: 1}
+
 			}
 
 			if err = decoder.DecodeElement(elementStruct, &tok); err != nil {
@@ -86,24 +97,29 @@ func (g *Group) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement) error
 	}
 }
 
-func ParseSvg(str string, name string) (*Svg, error) {
+func ParseSvg(str string, name string, scale float64) (*Svg, error) {
 	var svg Svg
-	//	svg.Name = name
-	//	fmt.Println(str)
+	svg.Name = name
+	svg.transform = mt.NewTransform()
+	if scale > 0 {
+		svg.transform.Scale(scale, scale)
+	}
+	if scale < 0 {
+		svg.transform.Scale(1.0/-scale, 1.0/-scale)
+	}
+	fmt.Println(svg.transform)
 	err := xml.Unmarshal([]byte(str), &svg)
 	if err != nil {
 		return nil, fmt.Errorf("ParseSvg Error: %v\n", err)
 	}
 	for i := range svg.Groups {
-		fmt.Printf("B  %p \n", &svg.Groups[i])
 		svg.Groups[i].svg = &svg
-
-		svg.Groups[i].SetSVGPointer(&svg)
-
+		if svg.Groups[i].transform == nil {
+			svg.Groups[i].transform = mt.NewTransform()
+		}
 	}
 
 	for _, g := range svg.Groups {
-		fmt.Printf("B %p \n", &g)
 		g.ToKicad()
 	}
 	return &svg, nil
@@ -113,8 +129,8 @@ type Tuple [2]float64
 
 func (svg *Svg) ToKicadModule() gokicadlib.Module {
 	var m gokicadlib.Module
-	fmt.Println(len(svg.ses))
 	m.SExpressions = svg.ses
+	fmt.Println("Number of kicad graphical elements: ", len(svg.ses))
 	m.Layer = gokicadlib.F_SilkS
 	m.Reference.Text = "REF**"
 	m.Reference.Type = "reference"
@@ -126,32 +142,12 @@ func (svg *Svg) ToKicadModule() gokicadlib.Module {
 	return m
 }
 
-type Transform [3][3]float64
-
-func (t *Transform) Apply(x float64, y float64) (float64, float64) {
-	var X, Y float64
-	X = t[0][0]*x + t[0][1] + t[0][2]
-	Y = t[1][0]*y + t[1][1] + t[1][2]
-	return X, Y
-}
-
-func (t *Transform) Identity() {
-	t[0][0] = 1
-	t[0][1] = 0
-	t[0][2] = 0
-	t[1][0] = 0
-	t[1][1] = 1
-	t[1][2] = 0
-	t[2][0] = 0
-	t[2][1] = 0
-	t[2][2] = 1
-
-}
-func (t *Transform) String() string {
-	return fmt.Sprintln(t)
-}
-
 func (g *Group) ToKicad() {
+	if g.group != nil {
+		g.transform.MultiplyWith(*g.group.transform)
+	} else {
+		g.transform.MultiplyWith(*g.svg.transform)
+	}
 	for _, elem := range g.Elements {
 		switch elem.(type) {
 		case *Path:

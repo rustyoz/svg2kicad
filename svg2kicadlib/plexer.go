@@ -8,36 +8,43 @@ import (
 )
 
 type item struct {
-	typ itemType
-	val string
+	typ   itemType
+	val   string
+	pos   int
+	lname *string
 }
 
 func (i item) String() string {
+	s := fmt.Sprint(*i.lname, " ", i.pos, " ")
 	switch i.typ {
 	case itemError:
-		return "Error"
+		return s + "Error"
 	case itemComma:
-		return "Comma"
+		return s + "Comma"
 	case itemParan:
-		return "Parentheses"
+		return s + "Parentheses" + i.val
 	case itemLetter:
-		return fmt.Sprint("Letter ", i.val)
+		return s + fmt.Sprintf("Letter \"%s\"", i.val)
+	case itemWord:
+		return s + fmt.Sprintf("Word \"%s\"", i.val)
 	case itemNumber:
-		return fmt.Sprint("Number ", i.val)
+		return s + fmt.Sprint("Number ", i.val)
 	case itemWSP:
-		return "WSP"
+		return s + "WSP"
 	default:
-		return i.val
+		return fmt.Sprintf("%s \"%s\"", s, i.val)
 	}
 }
 
 type lexer struct {
-	name  string
-	input string
-	start int
-	pos   int
-	width int
-	items chan item
+	name      string
+	input     string
+	start     int
+	pos       int
+	width     int
+	items     chan item
+	buffer    [3]item
+	peekcount int
 }
 
 type itemType int
@@ -73,6 +80,7 @@ func (l *lexer) run() {
 	for state := lexD; state != nil; {
 		state = state(l)
 	}
+	l.items <- item{typ: itemEOS}
 	close(l.items) // No more tokens will be delivered.
 }
 
@@ -111,8 +119,36 @@ func (l *lexer) backup() {
 }
 
 func (l *lexer) nextItem() item {
-	item := <-l.items
-	return item
+	if l.peekcount > 0 {
+		l.peekcount--
+		//	fmt.Println("nextItem got peeked item", l.buffer[0].String())
+		return l.buffer[0]
+	} else {
+		l.buffer[0] = <-l.items
+		//	fmt.Println("nextItem got new item", l.buffer[0].String())
+		return l.buffer[0]
+	}
+}
+
+func (l *lexer) nextItemP() item {
+	if l.peekcount > 0 {
+		l.peekcount--
+	} else {
+		l.buffer[0] = <-l.items
+	}
+	return l.buffer[l.peekcount]
+}
+
+func (l *lexer) peekItem() item {
+	if l.peekcount > 0 {
+		//	fmt.Println("peekItem got already peeked item", l.buffer[0].String())
+		return l.buffer[0]
+	}
+	//	fmt.Println("peekItem needs new item")
+	l.buffer[0] = l.nextItem()
+	l.peekcount = 1
+	//	fmt.Println("peekItem got new item", l.buffer[0].String())
+	return l.buffer[0]
 }
 
 func lexNumber(l *lexer) stateFn {
@@ -136,8 +172,8 @@ func (l *lexer) ignore() {
 }
 
 func (l *lexer) emit(t itemType) {
-	i := item{t, l.input[l.start:l.pos]}
-	//fmt.Println(i)
+
+	i := item{t, l.input[l.start:l.pos], l.start, &l.name}
 	l.items <- i
 	l.start = l.pos
 }
@@ -145,6 +181,15 @@ func (l *lexer) emit(t itemType) {
 func lexWord(l *lexer) stateFn {
 	l.acceptRun("abcdefghijklmnopqrstuwxyzABCDEFGHIJKLMNOPQRSTUWXYZ")
 	l.emit(itemWord)
+	return lexD
+}
+
+func lexLetter(l *lexer) stateFn {
+	l.accept("abcdefghijklmnopqrstuwxyzABCDEFGHIJKLMNOPQRSTUWXYZ")
+	if unicode.IsLetter(l.peek()) {
+		return lexWord
+	}
+	l.emit(itemLetter)
 	return lexD
 }
 
@@ -174,7 +219,7 @@ func lexD(l *lexer) stateFn {
 		case isWSP(r):
 			return lexWSP
 		case unicode.IsLetter(r):
-			return lexWord
+			return lexLetter
 		case r == '-' || r == '+':
 			return lexNumber
 		case unicode.IsNumber(r):
@@ -183,6 +228,8 @@ func lexD(l *lexer) stateFn {
 			return lexComma
 		case r == '(' || r == ')':
 			return lexParan
+		default:
+			return nil
 		}
 	}
 	return nil
@@ -192,4 +239,11 @@ func lexParan(l *lexer) stateFn {
 	l.accept("()")
 	l.emit(itemParan)
 	return lexD
+}
+
+func consumeWhiteSpace(l *lexer) error {
+	for l.peekItem().typ == itemWSP {
+		l.nextItem()
+	}
+	return nil
 }
