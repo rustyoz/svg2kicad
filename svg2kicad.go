@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/rustyoz/svg"
 	"github.com/rustyoz/svg2kicad/svg2kicadlib"
 )
 
@@ -42,12 +43,12 @@ func main() {
 	} else {
 		fmt.Println("Error parsing scale flag ", ok)
 	}
-	svg, err := svg2kicadlib.ParseSvg(svgStr, *filename, scalefloat)
+	svg, err := svg.ParseSvg(svgStr, *filename, scalefloat)
 	if err != nil {
 		fmt.Println("svg2kicadlib.ParseSvg(svgStr, filename, scalefloat) Error:" + err.Error())
 		return
 	}
-	m := svg.ToKicadModule()
+	m := svg2kicadlib.SvgToKicadModule(svg)
 	fmt.Println(m.Tags)
 	var outfile *os.File
 	outfile, err = os.Create(*filename + ".kicad_mod")
